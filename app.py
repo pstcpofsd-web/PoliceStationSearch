@@ -1,10 +1,51 @@
-import sys, re, time, html
+import sys, re, time, html, os, tempfile, subprocess
 import requests
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel, QListWidget, QListWidgetItem, QDialog, QComboBox, QTextEdit
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel, QListWidget, QListWidgetItem, QDialog, QComboBox, QTextEdit, QMessageBox, QProgressDialog
 
 GOOGLE_SHEET_API = "https://script.google.com/macros/s/AKfycbzsZY4QHGaskZwoXyrnmGSObPzDdo8U-DhfSKSSfzPmsKUCGoFNkQL4EsBsf20_H_PY/exec"
+APP_VERSION = "1.0.0"
+GITHUB_OWNER = "pstpcopsfd-web"
+GITHUB_REPO = "PoliceStationSearch"
+EXE_ASSET_NAME = "PoliceStationSearch.exe"
+GITHUB_RELEASE_API = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
+
+
+
+def ver(v):
+    nums=re.findall(r"\d+", str(v).lstrip("vV"))
+    return tuple(map(int,nums)) if nums else (0,)
+
+def latest_release():
+    try:
+        r=requests.get(GITHUB_RELEASE_API,headers={"Accept":"application/vnd.github+json"},timeout=8)
+        if r.status_code!=200: return None
+        d=r.json(); tag=d.get("tag_name","")
+        if not tag or ver(tag)<=ver(APP_VERSION): return None
+        asset=next((a for a in d.get("assets",[]) if a.get("name")==EXE_ASSET_NAME),None)
+        if not asset: return None
+        return {"version":tag,"url":asset.get("browser_download_url")}
+    except Exception: return None
+
+def install_after_exit(new_file,current_file):
+    bat=os.path.join(tempfile.gettempdir(),f"ps_update_{os.getpid()}.bat")
+    lines=[
+        '@echo off',
+        f'set "OLD={current_file}"',
+        f'set "NEW={new_file}"',
+        ':wait',
+        'tasklist /FI "IMAGENAME eq PoliceStationSearch.exe" | find /I "PoliceStationSearch.exe" >nul',
+        'if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)',
+        'timeout /t 1 /nobreak >nul',
+        'copy /Y "%NEW%" "%OLD%" >nul',
+        'if errorlevel 1 (start "" "%OLD%" & del "%~f0" & exit /b 1)',
+        'start "" "%OLD%"',
+        'del "%NEW%" >nul 2>&1',
+        'del "%~f0" >nul 2>&1'
+    ]
+    Path(bat).write_text("\n".join(lines),encoding="utf-8")
+    subprocess.Popen(["cmd.exe","/c",bat],creationflags=getattr(subprocess,"CREATE_NO_WINDOW",0),close_fds=True)
 
 def expand_areas(data):
     out=[]
@@ -96,6 +137,7 @@ class Main(QMainWindow):
         self.setStyleSheet("QWidget{background:#f3eee5;color:#2f241d;font-family:'Segoe UI';font-size:14px} #heading{font-size:30px;font-weight:700;color:#3f281d} QLineEdit,QComboBox,QTextEdit{background:white;border:1px solid #d9c7b8;border-radius:14px;padding:10px} QPushButton{background:#c87941;color:white;border:0;border-radius:12px;padding:10px 17px} QListWidget{background:white;border:1px solid #eaded3;border-radius:15px} QListWidget::item{padding:10px} QListWidget::item:selected{background:#f1e2d5;color:#2f241d}")
         self.toast=QLabel(self); self.toast.setStyleSheet("background:#8a5a34;color:white;border-radius:12px;padding:10px 20px"); self.toast.hide()
         self.load()
+        QTimer.singleShot(2500, self.check_update)
 
     def resizeEvent(self,e):
         super().resizeEvent(e)
@@ -106,6 +148,43 @@ class Main(QMainWindow):
         self.toast.setText(f"<b>{html.escape(a)}</b><br><small>{html.escape(b)}</small>")
         self.toast.adjustSize(); self.toast.move((self.width()-self.toast.width())//2,15); self.toast.show()
         QTimer.singleShot(3500,self.toast.hide)
+
+
+    def check_update(self):
+        info=latest_release()
+        if not info: return
+        box=QMessageBox(self)
+        box.setWindowTitle("🔔 New Update Available")
+        box.setText(f"<b>New version {html.escape(info['version'])} available!</b><br><br>Current: v{APP_VERSION}<br>Latest: {html.escape(info['version'])}<br><br>Update now?")
+        yes=box.addButton("⬇ Update Now",QMessageBox.AcceptRole)
+        box.addButton("Later",QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton()==yes: self.download_update(info)
+
+    def download_update(self,info):
+        progress=QProgressDialog("Downloading update...","Cancel",0,100,self)
+        progress.setWindowTitle("Police Station Search Update"); progress.setAutoClose(False); progress.show(); QApplication.processEvents()
+        try:
+            target=os.path.join(tempfile.gettempdir(),f"PoliceStationSearch_{info['version'].lstrip('v')}.exe")
+            r=requests.get(info['url'],stream=True,timeout=120); r.raise_for_status()
+            total=int(r.headers.get('content-length','0')); got=0
+            with open(target,'wb') as f:
+                for chunk in r.iter_content(1024*128):
+                    if chunk:
+                        f.write(chunk); got+=len(chunk)
+                        if total: progress.setValue(int(got*100/total))
+                        QApplication.processEvents()
+                        if progress.wasCanceled():
+                            try: os.remove(target)
+                            except OSError: pass
+                            return
+            if os.path.getsize(target)<100000: raise RuntimeError('Downloaded EXE is incomplete.')
+            if not getattr(sys,'frozen',False):
+                progress.close(); QMessageBox.information(self,'Update downloaded','Update test completed. Build this app as EXE for automatic replacement.'); return
+            current=os.path.abspath(sys.executable)
+            progress.setValue(100); progress.close(); install_after_exit(target,current); QApplication.quit()
+        except Exception as e:
+            progress.close(); QMessageBox.warning(self,'Update Failed',str(e))
 
     def load(self):
         self.toast_msg("⏳ Wait data is loading...","Developed by Mr. Majid Ali")
