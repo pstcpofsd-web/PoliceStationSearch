@@ -5,7 +5,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QLabel, QListWidget, QListWidgetItem, QDialog, QComboBox, QTextEdit, QMessageBox, QProgressDialog
 
 GOOGLE_SHEET_API = "https://script.google.com/macros/s/AKfycbzsZY4QHGaskZwoXyrnmGSObPzDdo8U-DhfSKSSfzPmsKUCGoFNkQL4EsBsf20_H_PY/exec"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_OWNER = "pstpcopsfd-web"
 GITHUB_REPO = "PoliceStationSearch"
 EXE_ASSET_NAME = "PoliceStationSearch.exe"
